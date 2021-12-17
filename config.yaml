@@ -1,0 +1,4 @@
+- start: echo "Hello World!"
+- start: echo $HELLO
+  env:
+    HELLO: hi world
