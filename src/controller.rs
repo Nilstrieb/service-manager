@@ -1,4 +1,4 @@
-use crate::model::{AppState, AppStateFullView};
+use crate::model::{AppState, AppStateFullView, Service, ServiceStatus};
 use crate::{view, App};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
@@ -33,9 +33,18 @@ impl App {
             table: AppState {
                 table_state: TableState::default(),
                 items: vec![
-                    vec!["backend".to_string(), "running".to_string()],
-                    vec!["frontend".to_string(), "exited (0)".to_string()],
-                    vec!["database".to_string(), "failed (1)".to_string()],
+                    Service {
+                        name: "backend".to_string(),
+                        status: ServiceStatus::Running,
+                    },
+                    Service {
+                        name: "frontend".to_string(),
+                        status: ServiceStatus::Exited,
+                    },
+                    Service {
+                        name: "database".to_string(),
+                        status: ServiceStatus::Failed(1),
+                    },
                 ],
             },
             selected: None,
@@ -49,9 +58,7 @@ impl App {
     fn select_service(&mut self) {
         if self.is_table() {
             if let Some(selected) = self.table.table_state.selected() {
-                self.selected = Some(AppStateFullView {
-                    name: self.table.items[selected][0].to_string(),
-                });
+                self.selected = Some(AppStateFullView { index: selected });
             }
         }
     }
