@@ -41,7 +41,7 @@ fn render_full_view<B: Backend>(f: &mut Frame<B>, state: &mut AppState, index: u
         .borders(Borders::ALL)
         .title("service".as_ref());
 
-    let stdout = service.stdout_buf.to_string_lossy();
+    let stdout = String::from_utf8_lossy(&service.stdout_buf);
 
     let paragraph = Paragraph::new(stdout.as_ref()).block(block);
 

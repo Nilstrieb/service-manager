@@ -4,16 +4,19 @@ use crate::{view, App};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io;
-use std::io::{ErrorKind, Read};
-use std::os::unix::ffi::OsStrExt;
+use std::io::{ErrorKind, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Mutex};
 use tui::backend::Backend;
 use tui::widgets::TableState;
 use tui::Terminal;
+
+const STDOUT_SEND_BUF_SIZE: usize = 512;
+
+pub type StdoutSendBuf = ([u8; STDOUT_SEND_BUF_SIZE], usize);
 
 pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
     loop {
@@ -64,7 +67,7 @@ impl App {
                                 .or_else(|_| std::env::current_dir())?,
                             env: service.env.unwrap_or_else(HashMap::new),
                             status: Mutex::new(ServiceStatus::NotStarted),
-                            stdout_buf: OsString::new(),
+                            stdout_buf: Vec::new(),
                             stdout_recv,
                             stdout_send: Mutex::new(Some(stdout_send)),
                         })
@@ -82,19 +85,19 @@ impl App {
 
     fn recv_stdouts(&mut self) {
         for service in self.table.services.iter_mut() {
-            while let Ok(vec) = service.stdout_recv.try_recv() {
-                service.stdout_buf.push(OsStr::from_bytes(&vec));
+            while let Ok((buf, n)) = service.stdout_recv.try_recv() {
+                service.stdout_buf.extend_from_slice(&buf[0..n]);
 
                 std::fs::write(
                     format!(
                         "debug/received_something_{}_{}.txt",
-                        service.name,
+                        &service.name,
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
                             .as_millis()
                     ),
-                    service.stdout_buf.as_bytes(),
+                    &service.stdout_buf,
                 )
                 .expect("debug failed fuck");
             }
@@ -172,8 +175,13 @@ impl App {
 
         let child = match cmd.spawn() {
             Err(err) => {
+                let mut buf = [0; STDOUT_SEND_BUF_SIZE];
+
+                let bytes = err.to_string();
+                (&mut buf[..]).write_all(bytes.as_bytes()).expect("dont");
+
                 stdout_send
-                    .send(err.to_string().into_bytes())
+                    .send((buf, bytes.len()))
                     .expect("failed to send stdout");
                 return;
             }
@@ -192,7 +200,7 @@ impl App {
 }
 fn child_process_thread(
     child: Child,
-    stdout_send: mpsc::Sender<Vec<u8>>,
+    stdout_send: mpsc::Sender<StdoutSendBuf>,
     terminate_channel: mpsc::Receiver<()>,
 ) -> io::Result<()> {
     let mut child = child;
@@ -204,29 +212,30 @@ fn child_process_thread(
             Err(TryRecvError::Empty) => {}
         }
 
-        let mut stdout_buf = Vec::new();
+        let mut stdout_buf = [0; STDOUT_SEND_BUF_SIZE];
+
         match stdout.read(&mut stdout_buf) {
             Ok(0) => continue,
-            Ok(_) => {
-                std::fs::write(
-                    format!(
-                        "debug/read_something_{}.txt",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis()
-                    ),
-                    &stdout_buf,
-                )
-                .ok();
+            Ok(n) => {
+                // std::fs::write(
+                //     format!(
+                //         "debug/read_something_{}.txt",
+                //         std::time::SystemTime::now()
+                //             .duration_since(std::time::UNIX_EPOCH)
+                //             .unwrap()
+                //             .as_millis()
+                //     ),
+                //     &stdout_buf,
+                // )
+                // .ok();
+
+                stdout_send
+                    .send((stdout_buf, n))
+                    .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         };
-
-        stdout_send
-            .send(stdout_buf)
-            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     }
 
     match child.kill() {

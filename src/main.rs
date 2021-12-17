@@ -18,43 +18,6 @@ use crate::model::config::Config;
 use crate::model::App;
 
 fn main() {
-    /////  ------------------------ TEST START ------------------------
-
-    let mut cmd = std::process::Command::new("sh");
-
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .args(&["-c", "echo hello"])
-        .spawn()
-        .unwrap();
-
-    let mut stdout = child.stdout.take().unwrap(); // std::fs::File::open("config.toml").unwrap();
-    std::thread::spawn(move || {
-        let mut buf = [0; 1024];
-
-        println!("{}", buf.len());
-
-        // stdout.read_to_end(&mut buf);
-
-        // println!("{}", String::from_utf8_lossy(&buf).as_ref());
-
-        // return;
-
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => println!("READ: now `{}`", String::from_utf8(buf.to_vec()).unwrap()),
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(e) => eprintln!("error: {}", e),
-            }
-        }
-        println!("done!");
-    });
-
-    std::thread::sleep(Duration::from_secs(3454233));
-
-    /////  ------------------------  TEST END  ------------------------
-
     let file_path = env::args()
         .nth(1)
         .or_else(|| env::var("SERVICE_MANAGER_CONFIG_PATH").ok())

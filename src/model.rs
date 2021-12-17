@@ -1,5 +1,8 @@
+use crate::controller::StdoutSendBuf;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io;
+use std::io::Error;
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
 use tui::widgets::TableState;
@@ -24,9 +27,9 @@ pub struct Service {
     pub workdir: PathBuf,
     pub env: HashMap<String, String>,
     pub status: Mutex<ServiceStatus>,
-    pub stdout_buf: OsString,
-    pub stdout_recv: mpsc::Receiver<Vec<u8>>,
-    pub stdout_send: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    pub stdout_buf: Vec<u8>,
+    pub stdout_recv: mpsc::Receiver<StdoutSendBuf>,
+    pub stdout_send: Mutex<Option<mpsc::Sender<StdoutSendBuf>>>,
 }
 
 #[derive(Debug)]
@@ -50,5 +53,18 @@ pub mod config {
         pub command: String,
         pub workdir: Option<PathBuf>,
         pub env: Option<HashMap<String, String>>,
+    }
+}
+
+pub type SmResult = Result<(), SmError>;
+
+pub enum SmError {
+    Io(io::Error),
+    MutexPoisoned,
+}
+
+impl From<io::Error> for SmError {
+    fn from(e: Error) -> Self {
+        Self::Io(e)
     }
 }
