@@ -1,35 +1,45 @@
 use tui::backend::Backend;
-use tui::layout::{Constraint, Layout};
+use tui::layout::{Constraint, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
-use tui::widgets::{Block, Borders, Cell, Row, Table};
+use tui::text::Spans;
+use tui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use tui::Frame;
 
-use crate::model::{AppState, AppStateTable};
+use crate::model::{AppState, AppStateFullView};
 use crate::App;
 
-pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    match &mut app.state {
-        AppState::Table(state) => {
-            table_ui(f, state);
+pub fn render_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let chunks = if f.size().height < 22 {
+        Layout::default()
+            .constraints(vec![Constraint::Percentage(100)])
+            .split(f.size())
+    } else {
+        Layout::default()
+            .constraints(vec![Constraint::Percentage(90), Constraint::Max(3)])
+            .split(f.size())
+    };
+
+    match app.selected {
+        None => {
+            render_table(f, &mut app.table, chunks[0]);
         }
-        AppState::FullView { name } => f.render_widget(
+        Some(AppStateFullView { ref name }) => f.render_widget(
             Block::default().borders(Borders::ALL).title(name.as_ref()),
-            f.size(),
+            chunks[0],
         ),
+    }
+
+    if let Some(footer_chunk) = chunks.get(1) {
+        render_help_footer(f, app, *footer_chunk);
     }
 }
 
-pub fn table_ui<B: Backend>(f: &mut Frame<B>, state: &mut AppStateTable) {
-    let rects = Layout::default()
-        .constraints(vec![Constraint::Percentage(100)])
-        .margin(5)
-        .split(f.size());
-
+fn render_table<B: Backend>(f: &mut Frame<B>, state: &mut AppState, area: Rect) {
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
     let normal_style = Style::default().bg(Color::Blue);
-    let header_cells = ["Header1", "Header2", "Header3"]
+    let header_cells = ["name", "status"]
         .iter()
-        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Red)));
+        .map(|h| Cell::from(*h).style(Style::default()));
 
     let header = Row::new(header_cells)
         .style(normal_style)
@@ -49,14 +59,22 @@ pub fn table_ui<B: Backend>(f: &mut Frame<B>, state: &mut AppStateTable) {
 
     let t = Table::new(rows)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Table"))
+        .block(Block::default().borders(Borders::ALL).title("services"))
         .highlight_style(selected_style)
-        .highlight_symbol(">> ")
-        .widths(&[
-            Constraint::Percentage(50),
-            Constraint::Length(30),
-            Constraint::Min(10),
-        ]);
+        .widths(&[Constraint::Percentage(50), Constraint::Length(30)]);
 
-    f.render_stateful_widget(t, rects[0], &mut state.table_state);
+    f.render_stateful_widget(t, area, &mut state.table_state);
+}
+
+pub fn render_help_footer<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+    let block = Block::default().title("help").borders(Borders::ALL);
+
+    let paragraph = Paragraph::new(if app.is_table() {
+        vec![Spans::from("q-quit    down-down    up-up    enter-select")]
+    } else {
+        vec![Spans::from("q-back    esc-back")]
+    })
+    .block(block);
+
+    f.render_widget(paragraph, area);
 }

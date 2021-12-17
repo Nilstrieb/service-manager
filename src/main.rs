@@ -2,13 +2,13 @@ mod controller;
 mod model;
 mod view;
 
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use std::{error::Error, io};
-use tui::backend::{Backend, CrosstermBackend};
+use tui::backend::CrosstermBackend;
 use tui::Terminal;
 
 use crate::model::App;
