@@ -1,5 +1,5 @@
 use crate::model::config::Config;
-use crate::model::{AppState, Service, ServiceStatus, SmError, SmResult};
+use crate::model::{AppState, Service, ServiceStatus, SmError, SmResult, StdIoStream};
 use crate::{view, App};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
@@ -9,13 +9,14 @@ use std::io::{ErrorKind, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Mutex};
+use std::time::Duration;
 use tui::backend::Backend;
 use tui::widgets::TableState;
 use tui::Terminal;
 
-const STDOUT_SEND_BUF_SIZE: usize = 512;
+const STDIO_SEND_BUF_SIZE: usize = 512;
 
-pub type StdoutSendBuf = ([u8; STDOUT_SEND_BUF_SIZE], usize);
+pub type StdioSendBuf = ([u8; STDIO_SEND_BUF_SIZE], usize);
 
 pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult {
     loop {
@@ -23,18 +24,20 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
 
         app.recv_stdouts();
 
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => match app.selected {
-                    Some(_) => app.leave_service(),
-                    None => break,
-                },
-                KeyCode::Char('r') => app.run_service()?,
-                KeyCode::Down => app.next(),
-                KeyCode::Up => app.previous(),
-                KeyCode::Enter => app.select_service(),
-                KeyCode::Esc => app.leave_service(),
-                _ => {}
+        if event::poll(Duration::from_millis(10))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => match app.selected {
+                        Some(_) => app.leave_service(),
+                        None => break,
+                    },
+                    KeyCode::Char('r') => app.run_service()?,
+                    KeyCode::Down => app.next(),
+                    KeyCode::Up => app.previous(),
+                    KeyCode::Enter => app.select_service(),
+                    KeyCode::Esc => app.leave_service(),
+                    _ => {}
+                }
             }
         }
     }
@@ -66,9 +69,11 @@ impl App {
                                 .or_else(|_| std::env::current_dir())?,
                             env: service.env.unwrap_or_else(HashMap::new),
                             status: Mutex::new(ServiceStatus::NotStarted),
-                            stdout_buf: Vec::new(),
-                            stdout_recv,
-                            stdout_send: Mutex::new(Some(stdout_send)),
+                            std_io_buf: Vec::new(),
+                            stdout: StdIoStream {
+                                recv: stdout_recv,
+                                send: stdout_send,
+                            },
                         })
                     })
                     .collect::<io::Result<_>>()?,
@@ -84,8 +89,12 @@ impl App {
 
     fn recv_stdouts(&mut self) {
         for service in self.table.services.iter_mut() {
-            while let Ok((buf, n)) = service.stdout_recv.try_recv() {
-                service.stdout_buf.extend_from_slice(&buf[0..n]);
+            while let Ok((buf, n)) = service.stdout.recv.try_recv() {
+                service.std_io_buf.extend(&buf[0..n]);
+
+                if service.std_io_buf.len() > 2_000_000 {
+                    service.std_io_buf.clear(); // todo don't
+                }
             }
         }
     }
@@ -131,25 +140,26 @@ impl App {
     }
 
     fn run_service(&mut self) -> SmResult {
-        if let Some(selected) = self.selected {
-            self.start_service(selected)
-        } else if let Some(selected) = self.table.table_state.selected() {
-            self.start_service(selected)
-        } else {
-            Ok(())
+        let index = self.selected.or_else(|| self.table.table_state.selected());
+
+        if let Some(index) = index {
+            let status = {
+                let service = &mut self.table.services[index];
+                *service.status.lock()?
+            };
+
+            if status != ServiceStatus::Running {
+                self.start_service(index)?;
+            }
         }
+
+        Ok(())
     }
 
     fn start_service(&mut self, service: usize) -> SmResult {
         let service = &mut self.table.services[service];
 
         *service.status.lock()? = ServiceStatus::Running;
-
-        let stdout_send = service
-            .stdout_send
-            .lock()?
-            .take()
-            .ok_or(SmError::StdioStolen)?;
 
         let mut cmd = Command::new("sh");
 
@@ -160,9 +170,11 @@ impl App {
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::piped());
 
+        let stdout_send = service.stdout.send.clone();
+
         let child = match cmd.spawn() {
             Err(err) => {
-                let mut buf = [0; STDOUT_SEND_BUF_SIZE];
+                let mut buf = [0; STDIO_SEND_BUF_SIZE];
 
                 let bytes = err.to_string();
 
@@ -177,13 +189,15 @@ impl App {
             Ok(child) => child,
         };
 
-        let (tx, rx) = mpsc::channel();
+        let (terminate_send, terminate_recv) = mpsc::channel();
 
-        self.thread_terminates.push(tx);
+        self.thread_terminates.push(terminate_send);
 
-        std::thread::spawn(move || match child_process_thread(child, stdout_send, rx) {
-            Ok(_) => {}
-            Err(e) => std::fs::write("error.txt", e.to_string()).unwrap(),
+        std::thread::spawn(move || {
+            match child_process_thread(child, stdout_send, terminate_recv) {
+                Ok(_) => {}
+                Err(e) => std::fs::write("error.txt", e.to_string()).unwrap(),
+            }
         });
 
         Ok(())
@@ -191,7 +205,7 @@ impl App {
 }
 fn child_process_thread(
     child: Child,
-    stdout_send: mpsc::Sender<StdoutSendBuf>,
+    stdout_send: mpsc::Sender<StdioSendBuf>,
     terminate_channel: mpsc::Receiver<()>,
 ) -> io::Result<()> {
     let mut child = child;
@@ -203,7 +217,7 @@ fn child_process_thread(
             Err(TryRecvError::Empty) => {}
         }
 
-        let mut stdout_buf = [0; STDOUT_SEND_BUF_SIZE];
+        let mut stdout_buf = [0; STDIO_SEND_BUF_SIZE];
 
         match stdout.read(&mut stdout_buf) {
             Ok(0) => continue,

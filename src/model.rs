@@ -1,4 +1,4 @@
-use crate::controller::StdoutSendBuf;
+use crate::controller::StdioSendBuf;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
@@ -26,12 +26,17 @@ pub struct Service {
     pub workdir: PathBuf,
     pub env: HashMap<String, String>,
     pub status: Mutex<ServiceStatus>,
-    pub stdout_buf: Vec<u8>,
-    pub stdout_recv: mpsc::Receiver<StdoutSendBuf>,
-    pub stdout_send: Mutex<Option<mpsc::Sender<StdoutSendBuf>>>,
+    pub std_io_buf: Vec<u8>,
+    pub stdout: StdIoStream,
 }
 
 #[derive(Debug)]
+pub struct StdIoStream {
+    pub recv: mpsc::Receiver<StdioSendBuf>,
+    pub send: mpsc::Sender<StdioSendBuf>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum ServiceStatus {
     NotStarted,
@@ -65,7 +70,6 @@ mod error {
         Io(io::Error),
         FailedToStartChild(io::Error),
         MutexPoisoned,
-        StdioStolen,
         FailedToSendStdio,
     }
 
@@ -86,7 +90,6 @@ mod error {
             match self {
                 Self::Io(e) => Display::fmt(e, f),
                 SmError::MutexPoisoned => f.write_str("Mutex was poisoned. This is a bug."),
-                SmError::StdioStolen => f.write_str("Stdio was stolen. This is a bug."),
                 SmError::FailedToStartChild(e) => write!(f, "Failed to start child process: {}", e),
                 SmError::FailedToSendStdio => {
                     f.write_str("Failed to send stdio to display thread. This is a bug.")

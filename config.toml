@@ -20,3 +20,16 @@ command = "touch uwu.txt"
 
 [side-effect-remove]
 command = "rm uwu.txt"
+
+[compile]
+command = "cargo check"
+
+[loop]
+command = """
+counter=0
+
+while true; do
+    echo $counter
+    counter=$((counter+1))
+done
+"""

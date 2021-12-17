@@ -41,9 +41,14 @@ fn render_full_view<B: Backend>(f: &mut Frame<B>, state: &mut AppState, index: u
         .borders(Borders::ALL)
         .title("service".as_ref());
 
-    let stdout = String::from_utf8_lossy(&service.stdout_buf);
+    let len = service.std_io_buf.len();
+    let stdout = if len > 10000 {
+        String::from_utf8_lossy(&service.std_io_buf[len - 10000..len])
+    } else {
+        String::from_utf8_lossy(&service.std_io_buf)
+    };
 
-    let paragraph = Paragraph::new(stdout.as_ref()).block(block);
+    let paragraph = Paragraph::new(stdout.as_ref()).block(block.clone());
 
     f.render_widget(paragraph, area)
 }
