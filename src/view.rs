@@ -6,7 +6,7 @@ use tui::text::Spans;
 use tui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use tui::Frame;
 
-use crate::model::{AppState, AppStateFullView, ServiceStatus};
+use crate::model::{AppState, ServiceStatus};
 use crate::App;
 
 pub fn render_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
@@ -24,7 +24,7 @@ pub fn render_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         None => {
             render_table(f, &mut app.table, chunks[0]);
         }
-        Some(AppStateFullView { index }) => {
+        Some(index) => {
             let name = &app.table.items[index].name;
 
             f.render_widget(
@@ -73,9 +73,11 @@ fn render_help_footer<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let block = Block::default().title("help").borders(Borders::ALL);
 
     let paragraph = Paragraph::new(if app.is_table() {
-        vec![Spans::from("q-quit    down-down    up-up    enter-select")]
+        vec![Spans::from(
+            "q-quit    down-down    up-up    enter-select    r-run service",
+        )]
     } else {
-        vec![Spans::from("q-back    esc-back")]
+        vec![Spans::from("q-back    esc-back    r-run service")]
     })
     .block(block);
 
@@ -88,6 +90,7 @@ impl Display for ServiceStatus {
             ServiceStatus::Running => f.write_str("running"),
             ServiceStatus::Exited => f.write_str("exited (0)"),
             ServiceStatus::Failed(code) => write!(f, "failed ({})", code),
+            ServiceStatus::NotStarted => f.write_str("not started"),
         }
     }
 }

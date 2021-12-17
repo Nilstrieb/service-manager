@@ -7,3 +7,7 @@ command = "sleep 48590234"
 [environment]
 command = "echo $HELLO && sleep 37852375"
 env = { HELLO = "uwu hi ヾ(•ω•`)o" }
+
+[pwd]
+command = "pwd"
+workdir = "./src"

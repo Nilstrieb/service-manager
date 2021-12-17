@@ -1,8 +1,12 @@
-use crate::model::{AppState, AppStateFullView, Service, ServiceStatus};
+use crate::model::config::Config;
+use crate::model::{AppState, Service, ServiceStatus};
 use crate::{view, App};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io;
+use std::process::{Command, Stdio};
 use tui::backend::Backend;
 use tui::widgets::TableState;
 use tui::Terminal;
@@ -17,6 +21,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     Some(_) => app.leave_service(),
                     None => return Ok(()),
                 },
+                KeyCode::Char('r') => app.run_service(),
                 KeyCode::Down => app.next(),
                 KeyCode::Up => app.previous(),
                 KeyCode::Enter => app.select_service(),
@@ -28,24 +33,23 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
 }
 
 impl App {
-    pub fn new() -> App {
+    pub fn new(config: Config) -> App {
         App {
             table: AppState {
                 table_state: TableState::default(),
-                items: vec![
-                    Service {
-                        name: "backend".to_string(),
-                        status: ServiceStatus::Running,
-                    },
-                    Service {
-                        name: "frontend".to_string(),
-                        status: ServiceStatus::Exited,
-                    },
-                    Service {
-                        name: "database".to_string(),
-                        status: ServiceStatus::Failed(1),
-                    },
-                ],
+                items: config
+                    .into_iter()
+                    .map(|(name, service)| Service {
+                        command: service.command,
+                        name,
+                        workdir: service
+                            .workdir
+                            .unwrap_or_else(|| std::env::current_dir().unwrap()),
+                        env: service.env.unwrap_or_else(HashMap::new),
+                        status: ServiceStatus::NotStarted,
+                        child: None,
+                    })
+                    .collect(),
             },
             selected: None,
         }
@@ -58,7 +62,7 @@ impl App {
     fn select_service(&mut self) {
         if self.is_table() {
             if let Some(selected) = self.table.table_state.selected() {
-                self.selected = Some(AppStateFullView { index: selected });
+                self.selected = Some(selected);
             }
         }
     }
@@ -93,5 +97,28 @@ impl App {
             None => 0,
         };
         self.table.table_state.select(Some(i));
+    }
+
+    fn run_service(&mut self) {
+        if let Some(selected) = self.selected {
+            self.start_service(selected)
+        } else if let Some(selected) = self.table.table_state.selected() {
+            self.start_service(selected)
+        }
+    }
+
+    fn start_service(&mut self, service: usize) {
+        let service = &mut self.table.items[service];
+        service.status = ServiceStatus::Running;
+
+        let mut cmd = Command::new("sh");
+
+        cmd.args(["-c", &service.command]);
+        cmd.envs(service.env.iter());
+
+        cmd.stdout(Stdio::piped());
+        let child = cmd.spawn();
+
+        service.child = Some(child);
     }
 }
