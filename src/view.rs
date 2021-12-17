@@ -69,7 +69,7 @@ fn render_table<B: Backend>(f: &mut Frame<B>, state: &mut AppState, area: Rect) 
                 service
                     .status
                     .lock()
-                    .expect("service.status lock poisoned")
+                    .expect("service.status lock poisoned") // returning result here is too much effort
                     .to_string(),
             ),
         ];

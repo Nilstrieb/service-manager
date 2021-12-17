@@ -7,9 +7,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use std::io::{ErrorKind, Read, StdoutLock};
-use std::process::Stdio;
-use std::time::Duration;
+use std::io::StdoutLock;
 use std::{env, fs, io};
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
@@ -44,7 +42,10 @@ or use the environment variable SERVICE_MANAGER_CONFIG_PATH"
     let stdout = io::stdout();
     let stdout = stdout.lock();
 
-    let mut terminal = setup_terminal(stdout).expect("failed to setup terminal");
+    let mut terminal = setup_terminal(stdout).unwrap_or_else(|e| {
+        eprintln!("error: failed to setup terminal: {}", e);
+        std::process::exit(1);
+    });
 
     // create app and run it
     let app = App::new(config);
@@ -53,7 +54,7 @@ or use the environment variable SERVICE_MANAGER_CONFIG_PATH"
         let res = controller::run_app(&mut terminal, app);
 
         if let Err(err) = res {
-            println!("{:?}", err)
+            println!("error: {}", err)
         }
     }
 

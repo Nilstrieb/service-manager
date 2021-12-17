@@ -1,10 +1,9 @@
 use crate::model::config::Config;
-use crate::model::{AppState, Service, ServiceStatus};
+use crate::model::{AppState, Service, ServiceStatus, SmError, SmResult};
 use crate::{view, App};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::io;
 use std::io::{ErrorKind, Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -18,7 +17,7 @@ const STDOUT_SEND_BUF_SIZE: usize = 512;
 
 pub type StdoutSendBuf = ([u8; STDOUT_SEND_BUF_SIZE], usize);
 
-pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult {
     loop {
         terminal.draw(|f| view::render_ui(f, &mut app))?;
 
@@ -30,7 +29,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     Some(_) => app.leave_service(),
                     None => break,
                 },
-                KeyCode::Char('r') => app.run_service(),
+                KeyCode::Char('r') => app.run_service()?,
                 KeyCode::Down => app.next(),
                 KeyCode::Up => app.previous(),
                 KeyCode::Enter => app.select_service(),
@@ -87,19 +86,6 @@ impl App {
         for service in self.table.services.iter_mut() {
             while let Ok((buf, n)) = service.stdout_recv.try_recv() {
                 service.stdout_buf.extend_from_slice(&buf[0..n]);
-
-                std::fs::write(
-                    format!(
-                        "debug/received_something_{}_{}.txt",
-                        &service.name,
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis()
-                    ),
-                    &service.stdout_buf,
-                )
-                .expect("debug failed fuck");
             }
         }
     }
@@ -144,25 +130,26 @@ impl App {
         self.table.table_state.select(Some(i));
     }
 
-    fn run_service(&mut self) {
+    fn run_service(&mut self) -> SmResult {
         if let Some(selected) = self.selected {
             self.start_service(selected)
         } else if let Some(selected) = self.table.table_state.selected() {
             self.start_service(selected)
+        } else {
+            Ok(())
         }
     }
 
-    fn start_service(&mut self, service: usize) {
+    fn start_service(&mut self, service: usize) -> SmResult {
         let service = &mut self.table.services[service];
 
-        *service.status.lock().expect("service.status lock poisoned") = ServiceStatus::Running;
+        *service.status.lock()? = ServiceStatus::Running;
 
         let stdout_send = service
             .stdout_send
-            .lock()
-            .expect("stdout_send lock poisoned")
+            .lock()?
             .take()
-            .expect("stdout_send has been stolen");
+            .ok_or(SmError::StdioStolen)?;
 
         let mut cmd = Command::new("sh");
 
@@ -178,12 +165,14 @@ impl App {
                 let mut buf = [0; STDOUT_SEND_BUF_SIZE];
 
                 let bytes = err.to_string();
-                (&mut buf[..]).write_all(bytes.as_bytes()).expect("dont");
+
+                (&mut buf[..]).write_all(bytes.as_bytes())?;
 
                 stdout_send
                     .send((buf, bytes.len()))
-                    .expect("failed to send stdout");
-                return;
+                    .map_err(|_| SmError::FailedToSendStdio)?;
+
+                return Err(SmError::FailedToStartChild(err));
             }
             Ok(child) => child,
         };
@@ -196,6 +185,8 @@ impl App {
             Ok(_) => {}
             Err(e) => std::fs::write("error.txt", e.to_string()).unwrap(),
         });
+
+        Ok(())
     }
 }
 fn child_process_thread(
@@ -217,18 +208,6 @@ fn child_process_thread(
         match stdout.read(&mut stdout_buf) {
             Ok(0) => continue,
             Ok(n) => {
-                // std::fs::write(
-                //     format!(
-                //         "debug/read_something_{}.txt",
-                //         std::time::SystemTime::now()
-                //             .duration_since(std::time::UNIX_EPOCH)
-                //             .unwrap()
-                //             .as_millis()
-                //     ),
-                //     &stdout_buf,
-                // )
-                // .ok();
-
                 stdout_send
                     .send((stdout_buf, n))
                     .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
