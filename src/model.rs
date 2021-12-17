@@ -1,19 +1,20 @@
 use std::collections::HashMap;
-use std::io;
+use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::Child;
+use std::sync::{mpsc, Mutex};
 use tui::widgets::TableState;
 
 #[derive(Debug)]
 pub struct App {
     pub table: AppState,
     pub selected: Option<usize>,
+    pub thread_terminates: Vec<mpsc::Sender<()>>,
 }
 
 #[derive(Debug)]
 pub struct AppState {
     pub table_state: TableState,
-    pub items: Vec<Service>,
+    pub services: Vec<Service>,
 }
 
 #[derive(Debug)]
@@ -22,11 +23,14 @@ pub struct Service {
     pub name: String,
     pub workdir: PathBuf,
     pub env: HashMap<String, String>,
-    pub status: ServiceStatus,
-    pub child: Option<io::Result<Child>>,
+    pub status: Mutex<ServiceStatus>,
+    pub stdout_buf: OsString,
+    pub stdout_recv: mpsc::Receiver<Vec<u8>>,
+    pub stdout_send: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum ServiceStatus {
     NotStarted,
     Running,
@@ -37,7 +41,6 @@ pub enum ServiceStatus {
 pub mod config {
     use serde::Deserialize;
     use std::collections::{BTreeMap, HashMap};
-    use std::ffi::OsString;
     use std::path::PathBuf;
 
     pub type Config = BTreeMap<String, Service>;

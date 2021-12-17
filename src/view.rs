@@ -25,18 +25,27 @@ pub fn render_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             render_table(f, &mut app.table, chunks[0]);
         }
         Some(index) => {
-            let name = &app.table.items[index].name;
-
-            f.render_widget(
-                Block::default().borders(Borders::ALL).title(name.as_ref()),
-                chunks[0],
-            )
+            render_full_view(f, &mut app.table, index, chunks[0]);
         }
     }
 
     if let Some(footer_chunk) = chunks.get(1) {
         render_help_footer(f, app, *footer_chunk);
     }
+}
+
+fn render_full_view<B: Backend>(f: &mut Frame<B>, state: &mut AppState, index: usize, area: Rect) {
+    let service = &state.services[index];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("service".as_ref());
+
+    let stdout = service.stdout_buf.to_string_lossy();
+
+    let paragraph = Paragraph::new(stdout.as_ref()).block(block);
+
+    f.render_widget(paragraph, area)
 }
 
 fn render_table<B: Backend>(f: &mut Frame<B>, state: &mut AppState, area: Rect) {
@@ -51,11 +60,18 @@ fn render_table<B: Backend>(f: &mut Frame<B>, state: &mut AppState, area: Rect) 
         .height(1)
         .bottom_margin(1);
 
-    let rows = state.items.iter().map(|service| {
+    let rows = state.services.iter().map(|service| {
         let height = service.name.chars().filter(|c| *c == '\n').count() + 1;
+
         let cells = [
             Cell::from(service.name.as_ref()),
-            Cell::from(service.status.to_string()),
+            Cell::from(
+                service
+                    .status
+                    .lock()
+                    .expect("service.status lock poisoned")
+                    .to_string(),
+            ),
         ];
         Row::new(cells).height(height as u16).bottom_margin(1)
     });

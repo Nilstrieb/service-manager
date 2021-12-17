@@ -8,17 +8,18 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use std::io::StdoutLock;
-use std::{env, error::Error, fs, io};
+use std::{env, fs, io};
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
 
 use crate::model::config::Config;
 use crate::model::App;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
     let file_path = env::args()
         .nth(1)
         .or_else(|| env::var("SERVICE_MANAGER_CONFIG_PATH").ok())
+        .or_else(|| Some("config.toml".to_string()))
         .unwrap_or_else(|| {
             eprintln!(
                 "error: config file not found
@@ -41,26 +42,36 @@ or use the environment variable SERVICE_MANAGER_CONFIG_PATH"
     let stdout = io::stdout();
     let stdout = stdout.lock();
 
-    let mut terminal = setup_terminal(stdout)?;
+    let mut terminal = setup_terminal(stdout).expect("failed to setup terminal");
 
     // create app and run it
     let app = App::new(config);
-    let res = controller::run_app(&mut terminal, app);
+
+    if let Ok(app) = app {
+        let res = controller::run_app(&mut terminal, app);
+
+        if let Err(err) = res {
+            println!("{:?}", err)
+        }
+    }
 
     // restore terminal
-    disable_raw_mode()?;
-    execute!(
+
+    if let Err(e) = disable_raw_mode() {
+        eprintln!("error: {}", e);
+    }
+
+    if let Err(e) = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(err) = res {
-        println!("{:?}", err)
+    ) {
+        eprintln!("error: {}", e);
     }
 
-    Ok(())
+    if let Err(e) = terminal.show_cursor() {
+        eprintln!("error: {}", e);
+    }
 }
 
 fn setup_terminal(mut stdout: StdoutLock) -> io::Result<Terminal<CrosstermBackend<StdoutLock>>> {

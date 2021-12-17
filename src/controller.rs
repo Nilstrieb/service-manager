@@ -4,9 +4,13 @@ use crate::{view, App};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
-use std::process::{Command, Stdio};
+use std::io::{ErrorKind, Read};
+use std::os::unix::ffi::OsStrExt;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::TryRecvError;
+use std::sync::{mpsc, Mutex};
 use tui::backend::Backend;
 use tui::widgets::TableState;
 use tui::Terminal;
@@ -15,11 +19,13 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
     loop {
         terminal.draw(|f| view::render_ui(f, &mut app))?;
 
+        app.recv_stdouts();
+
         if let Event::Key(key) = event::read()? {
             match key.code {
                 KeyCode::Char('q') => match app.selected {
                     Some(_) => app.leave_service(),
-                    None => return Ok(()),
+                    None => break,
                 },
                 KeyCode::Char('r') => app.run_service(),
                 KeyCode::Down => app.next(),
@@ -30,33 +36,69 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
             }
         }
     }
+
+    // terminate the child processes
+    for sender in app.thread_terminates {
+        let _ = sender.send(());
+    }
+
+    Ok(())
 }
 
 impl App {
-    pub fn new(config: Config) -> App {
-        App {
+    pub fn new(config: Config) -> io::Result<App> {
+        Ok(App {
             table: AppState {
                 table_state: TableState::default(),
-                items: config
+                services: config
                     .into_iter()
-                    .map(|(name, service)| Service {
-                        command: service.command,
-                        name,
-                        workdir: service
-                            .workdir
-                            .unwrap_or_else(|| std::env::current_dir().unwrap()),
-                        env: service.env.unwrap_or_else(HashMap::new),
-                        status: ServiceStatus::NotStarted,
-                        child: None,
+                    .map(|(name, service)| -> io::Result<Service> {
+                        let (stdout_send, stdout_recv) = mpsc::channel();
+
+                        Ok(Service {
+                            command: service.command,
+                            name,
+                            workdir: service
+                                .workdir
+                                .ok_or_else(|| io::Error::from(ErrorKind::Other))
+                                .or_else(|_| std::env::current_dir())?,
+                            env: service.env.unwrap_or_else(HashMap::new),
+                            status: Mutex::new(ServiceStatus::NotStarted),
+                            stdout_buf: OsString::new(),
+                            stdout_recv,
+                            stdout_send: Mutex::new(Some(stdout_send)),
+                        })
                     })
-                    .collect(),
+                    .collect::<io::Result<_>>()?,
             },
             selected: None,
-        }
+            thread_terminates: Vec::new(),
+        })
     }
 
     pub fn is_table(&self) -> bool {
         self.selected.is_none()
+    }
+
+    fn recv_stdouts(&mut self) {
+        for service in self.table.services.iter_mut() {
+            while let Ok(vec) = service.stdout_recv.try_recv() {
+                service.stdout_buf.push(OsStr::from_bytes(&vec));
+
+                std::fs::write(
+                    format!(
+                        "debug/received_something_{}_{}.txt",
+                        service.name,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                    ),
+                    service.stdout_buf.as_bytes(),
+                )
+                .expect("debug failed fuck");
+            }
+        }
     }
 
     fn select_service(&mut self) {
@@ -74,7 +116,7 @@ impl App {
     fn next(&mut self) {
         let i = match self.table.table_state.selected() {
             Some(i) => {
-                if i >= self.table.items.len() - 1 {
+                if i >= self.table.services.len() - 1 {
                     0
                 } else {
                     i + 1
@@ -89,7 +131,7 @@ impl App {
         let i = match self.table.table_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.table.items.len() - 1
+                    self.table.services.len() - 1
                 } else {
                     i - 1
                 }
@@ -108,8 +150,16 @@ impl App {
     }
 
     fn start_service(&mut self, service: usize) {
-        let service = &mut self.table.items[service];
-        service.status = ServiceStatus::Running;
+        let service = &mut self.table.services[service];
+
+        *service.status.lock().expect("service.status lock poisoned") = ServiceStatus::Running;
+
+        let stdout_send = service
+            .stdout_send
+            .lock()
+            .expect("stdout_send lock poisoned")
+            .take()
+            .expect("stdout_send has been stolen");
 
         let mut cmd = Command::new("sh");
 
@@ -117,8 +167,73 @@ impl App {
         cmd.envs(service.env.iter());
 
         cmd.stdout(Stdio::piped());
-        let child = cmd.spawn();
+        cmd.stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped());
 
-        service.child = Some(child);
+        let child = match cmd.spawn() {
+            Err(err) => {
+                stdout_send
+                    .send(err.to_string().into_bytes())
+                    .expect("failed to send stdout");
+                return;
+            }
+            Ok(child) => child,
+        };
+
+        let (tx, rx) = mpsc::channel();
+
+        self.thread_terminates.push(tx);
+
+        std::thread::spawn(move || match child_process_thread(child, stdout_send, rx) {
+            Ok(_) => {}
+            Err(e) => std::fs::write("error.txt", e.to_string()).unwrap(),
+        });
     }
+}
+fn child_process_thread(
+    child: Child,
+    stdout_send: mpsc::Sender<Vec<u8>>,
+    terminate_channel: mpsc::Receiver<()>,
+) -> io::Result<()> {
+    let mut child = child;
+    let mut stdout = child.stdout.take().unwrap();
+
+    loop {
+        match terminate_channel.try_recv() {
+            Ok(_) | Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {}
+        }
+
+        let mut stdout_buf = Vec::new();
+        match stdout.read(&mut stdout_buf) {
+            Ok(0) => continue,
+            Ok(_) => {
+                std::fs::write(
+                    format!(
+                        "debug/read_something_{}.txt",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                    ),
+                    &stdout_buf,
+                )
+                .ok();
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        };
+
+        stdout_send
+            .send(stdout_buf)
+            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+    }
+
+    match child.kill() {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
+        Err(e) => return Err(e),
+    }
+
+    Ok(())
 }

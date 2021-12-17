@@ -11,3 +11,12 @@ env = { HELLO = "uwu hi ヾ(•ω•`)o" }
 [pwd]
 command = "pwd"
 workdir = "./src"
+
+[crash]
+command = "cat fkasdjfölashjdflksd"
+
+[side-effect-create]
+command = "touch uwu.txt"
+
+[side-effect-remove]
+command = "rm uwu.txt"
