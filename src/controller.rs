@@ -8,7 +8,7 @@ use std::io;
 use std::io::{ErrorKind, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::TryRecvError;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tui::backend::Backend;
 use tui::widgets::TableState;
@@ -32,6 +32,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
                         None => break,
                     },
                     KeyCode::Char('r') => app.run_service()?,
+                    KeyCode::Char('k') => app.kill_service()?,
                     KeyCode::Down => app.next(),
                     KeyCode::Up => app.previous(),
                     KeyCode::Enter => app.select_service(),
@@ -43,7 +44,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
     }
 
     // terminate the child processes
-    for sender in app.thread_terminates {
+    for sender in app.thread_terminates.values() {
         let _ = sender.send(());
     }
 
@@ -68,7 +69,7 @@ impl App {
                                 .ok_or_else(|| io::Error::from(ErrorKind::Other))
                                 .or_else(|_| std::env::current_dir())?,
                             env: service.env.unwrap_or_else(HashMap::new),
-                            status: Mutex::new(ServiceStatus::NotStarted),
+                            status: Arc::new(Mutex::new(ServiceStatus::NotStarted)),
                             std_io_buf: Vec::new(),
                             stdout: StdIoStream {
                                 recv: stdout_recv,
@@ -79,7 +80,7 @@ impl App {
                     .collect::<io::Result<_>>()?,
             },
             selected: None,
-            thread_terminates: Vec::new(),
+            thread_terminates: HashMap::new(),
         })
     }
 
@@ -156,8 +157,31 @@ impl App {
         Ok(())
     }
 
-    fn start_service(&mut self, service: usize) -> SmResult {
-        let service = &mut self.table.services[service];
+    fn kill_service(&mut self) -> SmResult {
+        let index = self.selected.or_else(|| self.table.table_state.selected());
+
+        if let Some(index) = index {
+            let status = {
+                let service = &mut self.table.services[index];
+                *service.status.lock()?
+            };
+
+            if status == ServiceStatus::Running {
+                let terminate_sender = &mut self
+                    .thread_terminates
+                    .get(&index)
+                    .ok_or(SmError::Bug("Child termination channel not found"))?;
+                terminate_sender.send(()).map_err(|_| {
+                    SmError::Bug("Failed to send termination signal to child process")
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn start_service(&mut self, index: usize) -> SmResult {
+        let service = &mut self.table.services[index];
 
         *service.status.lock()? = ServiceStatus::Running;
 
@@ -191,29 +215,38 @@ impl App {
 
         let (terminate_send, terminate_recv) = mpsc::channel();
 
-        self.thread_terminates.push(terminate_send);
+        self.thread_terminates.insert(index, terminate_send);
+
+        let service_status = service.status.clone();
 
         std::thread::spawn(move || {
-            match child_process_thread(child, stdout_send, terminate_recv) {
+            match child_process_thread(child, stdout_send, service_status, terminate_recv) {
                 Ok(_) => {}
-                Err(e) => std::fs::write("error.txt", e.to_string()).unwrap(),
+                Err(e) => {
+                    let _ = std::fs::write("error.txt", e.to_string());
+                }
             }
         });
 
         Ok(())
     }
 }
+
 fn child_process_thread(
     child: Child,
     stdout_send: mpsc::Sender<StdioSendBuf>,
+    service_status: Arc<Mutex<ServiceStatus>>,
     terminate_channel: mpsc::Receiver<()>,
-) -> io::Result<()> {
+) -> SmResult {
     let mut child = child;
-    let mut stdout = child.stdout.take().unwrap();
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or(SmError::Bug("Stdout of child could not be taken"))?;
 
-    loop {
+    let result = loop {
         match terminate_channel.try_recv() {
-            Ok(_) | Err(TryRecvError::Disconnected) => break,
+            Ok(_) | Err(TryRecvError::Disconnected) => break Ok(()),
             Err(TryRecvError::Empty) => {}
         }
 
@@ -224,18 +257,29 @@ fn child_process_thread(
             Ok(n) => {
                 stdout_send
                     .send((stdout_buf, n))
-                    .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+                    .map_err(|_| SmError::Bug("Failed to send stdout to main thread"))?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
+            Err(e) => break Err(e.into()),
         };
-    }
+    };
 
     match child.kill() {
-        Ok(()) => {}
+        Ok(()) => {
+            *service_status.lock().map_err(|_| SmError::MutexPoisoned)? = ServiceStatus::Killed
+        }
         Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
-        Err(e) => return Err(e),
+        Err(e) => return Err(e.into()),
     }
 
-    Ok(())
+    let mut send_message_buf = [0; STDIO_SEND_BUF_SIZE];
+    let kill_msg = "\n\n<Process was killed>\n";
+    send_message_buf
+        .as_mut_slice()
+        .write_all(kill_msg.as_bytes())?;
+    stdout_send
+        .send((send_message_buf, kill_msg.len()))
+        .map_err(|_| SmError::Bug("Failed to send stdout to main thread"))?;
+
+    result
 }

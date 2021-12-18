@@ -1,7 +1,7 @@
 use crate::controller::StdioSendBuf;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use tui::widgets::TableState;
 
 pub use error::{SmError, SmResult};
@@ -10,7 +10,7 @@ pub use error::{SmError, SmResult};
 pub struct App {
     pub table: AppState,
     pub selected: Option<usize>,
-    pub thread_terminates: Vec<mpsc::Sender<()>>,
+    pub thread_terminates: HashMap<usize, mpsc::Sender<()>>,
 }
 
 #[derive(Debug)]
@@ -25,7 +25,7 @@ pub struct Service {
     pub name: String,
     pub workdir: PathBuf,
     pub env: HashMap<String, String>,
-    pub status: Mutex<ServiceStatus>,
+    pub status: Arc<Mutex<ServiceStatus>>,
     pub std_io_buf: Vec<u8>,
     pub stdout: StdIoStream,
 }
@@ -37,12 +37,12 @@ pub struct StdIoStream {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ServiceStatus {
     NotStarted,
     Running,
     Exited,
     Failed(u8),
+    Killed,
 }
 
 pub mod config {
@@ -71,6 +71,9 @@ mod error {
         FailedToStartChild(io::Error),
         MutexPoisoned,
         FailedToSendStdio,
+        /// This should never happen and would be a panic in most programs, but panicking here
+        /// might fuck things up badly, so we don't want to
+        Bug(&'static str),
     }
 
     impl From<io::Error> for SmError {
@@ -94,6 +97,7 @@ mod error {
                 SmError::FailedToSendStdio => {
                     f.write_str("Failed to send stdio to display thread. This is a bug.")
                 }
+                SmError::Bug(str) => write!(f, "{}. This is a bug.", str),
             }
         }
     }

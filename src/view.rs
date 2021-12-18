@@ -95,10 +95,12 @@ fn render_help_footer<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(if app.is_table() {
         vec![Spans::from(
-            "q-quit    down-down    up-up    enter-select    r-run service",
+            "q-quit    down-down    up-up    enter-select    r-run service    k-kill service",
         )]
     } else {
-        vec![Spans::from("q-back    esc-back    r-run service")]
+        vec![Spans::from(
+            "q-back    esc-back    r-run service    k-kill service",
+        )]
     })
     .block(block);
 
@@ -112,6 +114,7 @@ impl Display for ServiceStatus {
             ServiceStatus::Exited => f.write_str("exited (0)"),
             ServiceStatus::Failed(code) => write!(f, "failed ({})", code),
             ServiceStatus::NotStarted => f.write_str("not started"),
+            ServiceStatus::Killed => f.write_str("killed"),
         }
     }
 }
