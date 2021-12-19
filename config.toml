@@ -10,7 +10,7 @@ env = { HELLO = "uwu hi ヾ(•ω•`)o" }
 
 [pwd]
 command = "pwd"
-workdir = "./src"
+workdir = "./src/controller"
 
 [crash]
 command = "cat fkasdjfölashjdflksd"
@@ -29,6 +29,16 @@ command = """
 counter=0
 
 while true; do
+    echo $counter
+    counter=$((counter+1))
+done
+"""
+
+[many-lines]
+command = """
+counter=0
+
+while [ $counter -lt 100 ]; do
     echo $counter
     counter=$((counter+1))
 done

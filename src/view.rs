@@ -56,7 +56,7 @@ fn render_full_view<B: Backend>(f: &mut Frame<B>, state: &mut AppState, index: u
 fn render_table<B: Backend>(f: &mut Frame<B>, state: &mut AppState, area: Rect) {
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
     let normal_style = Style::default().bg(Color::Blue);
-    let header_cells = ["name", "status"]
+    let header_cells = ["Name", "Status"]
         .iter()
         .map(|h| Cell::from(*h).style(Style::default()));
 

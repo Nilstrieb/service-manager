@@ -8,7 +8,7 @@ use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
-use std::process::{ChildStderr, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use std::{io, thread};
@@ -34,7 +34,9 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
                 match key.code {
                     KeyCode::Char('q') => match app.selected {
                         Some(_) => app.leave_service(),
-                        None => break,
+                        None => {
+                            break;
+                        }
                     },
                     KeyCode::Char('r') => app.run_service()?,
                     KeyCode::Char('k') => app.kill_service()?,
@@ -49,7 +51,9 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
     }
 
     // terminate the child processes
-    for sender in app.thread_terminates.values() {
+    for (i, sender) in app.thread_terminates.values().enumerate() {
+        info!(index = i, "Terminating child thread...");
+
         let _ = sender.send(());
     }
 
@@ -151,6 +155,7 @@ impl App {
         if let Some(index) = index {
             let status = {
                 let service = &mut self.table.services[index];
+                service.std_io_buf.clear();
                 *service.status.lock()?
             };
 
@@ -166,12 +171,13 @@ impl App {
         let index = self.selected.or_else(|| self.table.table_state.selected());
 
         if let Some(index) = index {
-            let status = {
-                let service = &mut self.table.services[index];
-                *service.status.lock()?
-            };
+            let service = &mut self.table.services[index];
+
+            let status = { *service.status.lock()? };
 
             if status == ServiceStatus::Running {
+                info!(name = %service.name,"Killing service");
+
                 let terminate_sender = &mut self
                     .thread_terminates
                     .get(&index)

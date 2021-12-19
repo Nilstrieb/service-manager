@@ -72,7 +72,7 @@ mod error {
         MutexPoisoned,
         FailedToSendStdio,
         /// This should never happen and would be a panic in most programs, but panicking here
-        /// might fuck things up badly, so we don't want to
+        /// is not a good idea
         Bug(&'static str),
     }
 
