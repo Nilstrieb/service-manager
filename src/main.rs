@@ -87,7 +87,7 @@ fn setup_logging() {
     tracing_subscriber::fmt()
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .with_ansi(false)
-        .pretty()
+        .with_thread_names(true)
         .with_writer(log_file)
         .init();
 

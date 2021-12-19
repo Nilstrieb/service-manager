@@ -1,6 +1,0 @@
-     0.000298909s  INFO service_manager: Starting service-manager...
-    at src/main.rs:94
-
-     0.002233976s  INFO service_manager::controller: Entering main loop
-    at src/controller.rs:23
-
