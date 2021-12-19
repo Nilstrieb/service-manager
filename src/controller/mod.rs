@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{io, thread};
 use tracing::{error, info};
 use tui::backend::Backend;
@@ -27,9 +27,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
     loop {
         terminal.draw(|f| view::render_ui(f, &mut app))?;
 
-        app.recv_stdouts();
-
-        if event::poll(Duration::from_millis(10))? {
+        if event::poll(Duration::from_secs(0))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => match app.selected {
@@ -40,14 +38,22 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult
                     },
                     KeyCode::Char('r') => app.run_service()?,
                     KeyCode::Char('k') => app.kill_service()?,
-                    KeyCode::Down => app.next(),
-                    KeyCode::Up => app.previous(),
+                    KeyCode::Down => match app.selected {
+                        Some(_) => app.scroll_down(),
+                        None => app.next(),
+                    },
+                    KeyCode::Up => match app.selected {
+                        Some(_) => app.scroll_up(),
+                        None => app.previous(),
+                    },
                     KeyCode::Enter => app.select_service(),
                     KeyCode::Esc => app.leave_service(),
                     _ => {}
                 }
             }
         }
+
+        app.recv_stdouts(Duration::from_millis(10));
     }
 
     // terminate the child processes
@@ -80,6 +86,7 @@ impl App {
                             env: service.env.unwrap_or_else(HashMap::new),
                             status: Arc::new(Mutex::new(ServiceStatus::NotStarted)),
                             std_io_buf: Vec::new(),
+                            std_io_line_cache: Vec::new(),
                             stdout: StdIoStream {
                                 recv: stdout_recv,
                                 send: stdout_send,
@@ -89,6 +96,7 @@ impl App {
                     .collect::<io::Result<_>>()?,
             },
             selected: None,
+            scroll_pos: None,
             thread_terminates: HashMap::new(),
         })
     }
@@ -97,13 +105,30 @@ impl App {
         self.selected.is_none()
     }
 
-    fn recv_stdouts(&mut self) {
+    fn recv_stdouts(&mut self, duration: Duration) {
         for service in self.table.services.iter_mut() {
-            while let Ok((buf, n)) = service.stdout.recv.try_recv() {
-                service.std_io_buf.extend(&buf[0..n]);
+            let start = Instant::now();
+            let buf = &mut service.std_io_buf;
 
-                if service.std_io_buf.len() > 2_000_000 {
-                    service.std_io_buf.clear(); // todo don't
+            while let Ok((new_buf, n)) = service.stdout.recv.try_recv() {
+                let len_before = buf.len();
+                buf.extend(&new_buf[0..n]);
+
+                let new_newline_positions = new_buf
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &byte)| byte == b'\n')
+                    .map(|(position, _)| position + len_before);
+
+                service.std_io_line_cache.extend(new_newline_positions);
+
+                if buf.len() > 2_000_000 {
+                    buf.clear(); // todo don't
+                    service.std_io_line_cache.clear();
+                }
+
+                if start.elapsed() > duration {
+                    break;
                 }
             }
         }
@@ -147,6 +172,14 @@ impl App {
             None => 0,
         };
         self.table.table_state.select(Some(i));
+    }
+
+    fn scroll_up(&mut self) {
+        self.scroll_pos = self.scroll_pos.map(|pos| pos + 1);
+    }
+
+    fn scroll_down(&mut self) {
+        self.scroll_pos = self.scroll_pos.map(|pos| pos - 1);
     }
 
     fn run_service(&mut self) -> SmResult {

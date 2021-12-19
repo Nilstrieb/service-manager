@@ -41,12 +41,21 @@ fn render_full_view<B: Backend>(f: &mut Frame<B>, state: &mut AppState, index: u
         .borders(Borders::ALL)
         .title("service".as_ref());
 
-    let len = service.std_io_buf.len();
-    let stdout = if len > 10000 {
-        String::from_utf8_lossy(&service.std_io_buf[len - 10000..len])
-    } else {
-        String::from_utf8_lossy(&service.std_io_buf)
-    };
+    let height = area.height - 2; // the block takes up 2 lines
+    let buf_len = service.std_io_buf.len();
+
+    let display_start_pos = service
+        .std_io_line_cache
+        .get(
+            service
+                .std_io_line_cache
+                .len()
+                .saturating_sub(usize::from(height)),
+        )
+        .cloned()
+        .unwrap_or(0);
+
+    let stdout = String::from_utf8_lossy(&service.std_io_buf[display_start_pos..buf_len]);
 
     let paragraph = Paragraph::new(stdout.as_ref()).block(block.clone());
 

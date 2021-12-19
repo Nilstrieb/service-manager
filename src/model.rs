@@ -10,6 +10,7 @@ pub use error::{SmError, SmResult};
 pub struct App {
     pub table: AppState,
     pub selected: Option<usize>,
+    pub scroll_pos: Option<usize>,
     pub thread_terminates: HashMap<usize, mpsc::Sender<()>>,
 }
 
@@ -27,6 +28,8 @@ pub struct Service {
     pub env: HashMap<String, String>,
     pub status: Arc<Mutex<ServiceStatus>>,
     pub std_io_buf: Vec<u8>,
+    /// The start position of every line number
+    pub std_io_line_cache: Vec<usize>,
     pub stdout: StdIoStream,
 }
 
