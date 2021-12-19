@@ -41,7 +41,7 @@ pub enum ServiceStatus {
     NotStarted,
     Running,
     Exited,
-    Failed(u8),
+    Failed(i32),
     Killed,
 }
 

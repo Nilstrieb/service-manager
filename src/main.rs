@@ -7,8 +7,10 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use std::fs::File;
 use std::io::StdoutLock;
 use std::{env, fs, io};
+use tracing::info;
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
 
@@ -16,6 +18,8 @@ use crate::model::config::Config;
 use crate::model::App;
 
 fn main() {
+    setup_logging();
+
     let file_path = env::args()
         .nth(1)
         .or_else(|| env::var("SERVICE_MANAGER_CONFIG_PATH").ok())
@@ -75,6 +79,19 @@ or use the environment variable SERVICE_MANAGER_CONFIG_PATH"
     if let Err(e) = terminal.show_cursor() {
         eprintln!("error: {}", e);
     }
+}
+
+fn setup_logging() {
+    let log_file = File::create("service-manager.log").unwrap();
+
+    tracing_subscriber::fmt()
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .with_ansi(false)
+        .pretty()
+        .with_writer(log_file)
+        .init();
+
+    info!("Starting service-manager...");
 }
 
 fn setup_terminal(mut stdout: StdoutLock) -> io::Result<Terminal<CrosstermBackend<StdoutLock>>> {

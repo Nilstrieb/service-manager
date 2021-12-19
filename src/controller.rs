@@ -10,6 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::TryRecvError;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
+use tracing::{error, info, trace_span};
 use tui::backend::Backend;
 use tui::widgets::TableState;
 use tui::Terminal;
@@ -19,6 +20,8 @@ const STDIO_SEND_BUF_SIZE: usize = 512;
 pub type StdioSendBuf = ([u8; STDIO_SEND_BUF_SIZE], usize);
 
 pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> SmResult {
+    info!("Entering main loop");
+
     loop {
         terminal.draw(|f| view::render_ui(f, &mut app))?;
 
@@ -183,6 +186,8 @@ impl App {
     fn start_service(&mut self, index: usize) -> SmResult {
         let service = &mut self.table.services[index];
 
+        trace_span!("Starting service", name = %service.name);
+
         *service.status.lock()? = ServiceStatus::Running;
 
         let mut cmd = Command::new("sh");
@@ -219,14 +224,20 @@ impl App {
 
         let service_status = service.status.clone();
 
-        std::thread::spawn(move || {
-            match child_process_thread(child, stdout_send, service_status, terminate_recv) {
-                Ok(_) => {}
-                Err(e) => {
-                    let _ = std::fs::write("error.txt", e.to_string());
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("worker-{}", service.name))
+            .spawn(move || {
+                match child_process_thread(child, stdout_send, service_status, terminate_recv) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        error!(error = %err, "Error processing service");
+                    }
                 }
-            }
-        });
+            });
+
+        if let Err(err) = spawn_result {
+            error!(error = %err, "Error spawning thread");
+        }
 
         Ok(())
     }
@@ -244,6 +255,30 @@ fn child_process_thread(
         .take()
         .ok_or(SmError::Bug("Stdout of child could not be taken"))?;
 
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or(SmError::Bug("Stderr of child could not be taken"))?;
+
+    let stdout_send_2 = stdout_send.clone();
+    std::thread::spawn(move || {
+        let mut stderr_buf = [0; STDIO_SEND_BUF_SIZE];
+        match stderr.read(&mut stderr_buf) {
+            Ok(0) => {}
+            Ok(n) => {
+                let result = stdout_send_2
+                    .send((stderr_buf, n))
+                    .map_err(|_| SmError::Bug("Failed to send stderr to main thread"));
+
+                if let Err(err) = result {
+                    error!(error = %err);
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => error!(error = %err, "Error reading from stderr"),
+        };
+    });
+
     let result = loop {
         match terminate_channel.try_recv() {
             Ok(_) | Err(TryRecvError::Disconnected) => break Ok(()),
@@ -251,9 +286,8 @@ fn child_process_thread(
         }
 
         let mut stdout_buf = [0; STDIO_SEND_BUF_SIZE];
-
         match stdout.read(&mut stdout_buf) {
-            Ok(0) => continue,
+            Ok(0) => {}
             Ok(n) => {
                 stdout_send
                     .send((stdout_buf, n))
@@ -262,6 +296,22 @@ fn child_process_thread(
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => break Err(e.into()),
         };
+
+        match child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) => {
+                let mut status_lock = service_status.lock().map_err(|_| SmError::MutexPoisoned)?;
+
+                *status_lock = match status.code() {
+                    Some(0) => ServiceStatus::Exited,
+                    Some(code) => ServiceStatus::Failed(code),
+                    None => ServiceStatus::Killed,
+                };
+
+                return Ok(());
+            }
+            Err(e) => break Err(e.into()),
+        }
     };
 
     match child.kill() {
